@@ -1,55 +1,130 @@
 import numpy as np
 from sklearn.metrics import pairwise_distances
 
-def odeconet_optics(users, MinPts=10, xi=0.05, min_cluster_size=50):
-    from sklearn.metrics import pairwise_distances
-    N = len(users)
-    D = pairwise_distances(users)
 
-    # Step 3.1: Compute Core Distances (CD)
-    CD = np.full(N, np.inf)
+def optics_deconet(users, min_pts=10, xi=0.05, distance_threshold=None):
+    """
+    Implements O-DeCoNet OPTICS-based clustering.
+
+    Args:
+        users (ndarray): Array of user coordinates (N, 2)
+        min_pts (int): Minimum number of points to define a core
+        xi (float): Steepness parameter for reachability distance (RD) valley detection
+        distance_threshold (float): Optional fallback threshold for clustering
+
+    Returns:
+        clusters (list): List of clusters (each is a list of indices)
+        reachability (list): Reachability distances for each user in order
+        S_ORDER (list): Ordering of users as processed
+    """
+    N = users.shape[0]
+
+    # Compute pairwise distances
+    distance_matrix = pairwise_distances(users)
+
+    # Compute core distances (CD)
+    core_distances = np.full(N, np.inf)
     for i in range(N):
-        sorted_distances = np.sort(D[i])
-        if len(sorted_distances) > MinPts:
-            CD[i] = sorted_distances[MinPts]
+        sorted_distances = np.sort(distance_matrix[i])
+        if len(sorted_distances) > min_pts:
+            core_distances[i] = sorted_distances[min_pts]
 
-    # Initialize RD and order
-    RD = np.full(N, np.inf)
-    S_ORDER = []
-    SSEED = set(range(N))
+    # Initialize reachability distances (RD) and seeds
+    reachability_distances = np.full(N, np.inf)
+    processing_order = []
+    seed_set = set(range(N))
 
-    # Steps 3.2 - 3.6: Ordering points
-    while SSEED:
-        if np.isfinite(RD).any():
-            i = min(SSEED, key=lambda x: RD[x])
+    # OPTICS ordering process
+    while seed_set:
+        if np.isfinite(reachability_distances).any():
+            current_point = min(seed_set, key=lambda x: reachability_distances[x])
         else:
-            i = np.random.choice(list(SSEED))
-        S_ORDER.append(i)
-        SSEED.remove(i)
+            current_point = np.random.choice(list(seed_set))
+
+        processing_order.append(current_point)
+        seed_set.remove(current_point)
 
         # Update RD for remaining points
-        for k in SSEED:
-            TVk = max(CD[i], D[i][k])
-            if TVk < RD[k]:
-                RD[k] = TVk
+        for neighbor in seed_set:
+            distance_to_neighbor = distance_matrix[current_point][neighbor]
+            updated_rd = max(core_distances[current_point], distance_to_neighbor)
+            if updated_rd < reachability_distances[neighbor]:
+                reachability_distances[neighbor] = updated_rd
 
-    # Step 3.7 and 3.8: Cluster extraction
+    # Cluster extraction using RD valleys
     clusters = []
     i = 0
-    while i < len(S_ORDER) - 1:
+    while i < len(processing_order) - 1:
         j = i
-        while j < len(S_ORDER) - 1 and RD[S_ORDER[j]] * (1 - xi) >= RD[S_ORDER[j + 1]]:
+        while j < len(processing_order) - 1 and reachability_distances[processing_order[j]] * (1 - xi) >= reachability_distances[processing_order[j + 1]]:
             j += 1
 
         k = j
-        while k < len(S_ORDER) - 1 and RD[S_ORDER[k]] <= RD[S_ORDER[k + 1]] * (1 - xi):
+        while k < len(processing_order) - 1 and reachability_distances[processing_order[k]] <= reachability_distances[processing_order[k + 1]] * (1 - xi):
             k += 1
 
-        if (k - j) >= MinPts and (k - j) >= min_cluster_size:
-            clusters.append(S_ORDER[j + 1:k + 1])
+        if (k - j) >= min_pts:
+            cluster = processing_order[j + 1:k + 1]
+            clusters.append(cluster)
+            i = k + 1
+        else:
+            i += 1
 
-        i = k + 1
+    # Fallback clustering if no clusters found
+    if len(clusters) == 0 and distance_threshold is not None:
+        visited = np.zeros(N, dtype=bool)
+        for idx in range(N):
+            if visited[idx]:
+                continue
+            neighbors = np.where(distance_matrix[idx] <= distance_threshold)[0]
+            if len(neighbors) >= min_pts:
+                clusters.append(list(neighbors))
+                visited[neighbors] = True
 
-    return clusters, RD, S_ORDER
+    reachability = [reachability_distances[i] for i in processing_order]
+    return clusters, reachability, processing_order
 
+
+def merge_clusters(users, clusters, merge_radius=150, min_cluster_size=50):
+    """
+    Merge clusters that are close together into major clusters.
+
+    Args:
+        users (ndarray): All user positions
+        clusters (list): List of initial clusters
+        merge_radius (float): Maximum distance between cluster centroids to merge
+        min_cluster_size (int): Ignore clusters smaller than this size
+
+    Returns:
+        merged_clusters (list of list): List of merged major clusters
+    """
+    # Filter clusters based on minimum size
+    large_clusters = []
+    for cluster in clusters:
+        if len(cluster) >= min_cluster_size:
+            large_clusters.append(cluster)
+
+    # Compute centroids for large clusters
+    centroids = []
+    for cluster in large_clusters:
+        centroid = users[cluster].mean(axis=0)
+        centroids.append(centroid)
+
+    merged_clusters = []
+    used = set()
+
+    # Merge clusters that are close together
+    for i, cluster_i in enumerate(large_clusters):
+        if i in used:
+            continue
+
+        merged_set = set(cluster_i)
+        for j in range(i + 1, len(large_clusters)):
+            if np.linalg.norm(centroids[i] - centroids[j]) < merge_radius:
+                merged_set.update(large_clusters[j])
+                used.add(j)
+
+        merged_clusters.append(list(merged_set))
+
+    return merged_clusters
 

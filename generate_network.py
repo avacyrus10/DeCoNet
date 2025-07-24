@@ -1,29 +1,30 @@
 import numpy as np
 
-def generate_network(area_size=1000, lambda_B=0.0001, lambda_u_low=0.001, lambda_u_high=0.005,
-                     num_high_density_areas=3, high_density_radius=100):
+def generate_network(area_size=1000, num_high_density_areas=3,
+                                lambda_B=0.1e3, lambda_u_low=1e3,
+                                lambda_u_high_range=(4e3, 30e3),
+                                high_density_radius=100):
     """
-    Generate base stations and users using Poisson Point Process.
-
+    Generate network based on paper simulation environment.
     Returns:
-        BS_positions: ndarray of shape (num_BS, 2)
-        users_all: ndarray of shape (num_users, 2)
-        users_low: ndarray of low-density users
-        users_high: ndarray of high-density users
+        BS_positions, users_all, users_low, users_high
     """
-    # Generate BSs
-    num_BS = np.random.poisson(lambda_B * area_size * area_size)
+    # Calculate number of BSs
+    num_BS = int(lambda_B * (area_size ** 2) / 1e6)  # Convert km² to m²
     BS_positions = np.random.uniform(0, area_size, (num_BS, 2))
 
-    # Generate low-density users
-    num_users_low = np.random.poisson(lambda_u_low * area_size * area_size)
+    # Low-density users
+    num_users_low = int(lambda_u_low * (area_size ** 2) / 1e6)
     users_low = np.random.uniform(0, area_size, (num_users_low, 2))
 
-    # Generate high-density clusters
+    # High-density clusters
     users_high = []
     for _ in range(num_high_density_areas):
         center = np.random.uniform(high_density_radius, area_size - high_density_radius, 2)
-        num_users_hd = np.random.poisson(lambda_u_high * np.pi * high_density_radius ** 2)
+        # Pick random λ from the given range
+        lambda_u_high = np.random.uniform(*lambda_u_high_range)
+        # Expected users in high-density cluster
+        num_users_hd = int(lambda_u_high * (np.pi * (high_density_radius ** 2)) / 1e6)
         angles = np.random.uniform(0, 2 * np.pi, num_users_hd)
         radii = high_density_radius * np.sqrt(np.random.uniform(0, 1, num_users_hd))
         x = center[0] + radii * np.cos(angles)

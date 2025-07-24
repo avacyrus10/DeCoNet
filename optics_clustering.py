@@ -1,50 +1,39 @@
 import numpy as np
 from sklearn.metrics import pairwise_distances
 
-def optics_deconet(users, min_pts=5, xi=0.1):
-    """
-    Implements the core steps of O-DeCoNet: OPTICS-based clustering.
-    
-    Args:
-        users (ndarray): user coordinates, shape (N, 2)
-        min_pts (int): Minimum number of points to define a core
-        xi (float): steepness parameter for RD valley detection
-
-    Returns:
-        clusters: list of lists, each sublist is indices of users in one cluster
-        reachability: list of reachability distances in S_ORDER
-        S_ORDER: ordered list of user indices
-    """
-    N = users.shape[0]
+def odeconet_optics(users, MinPts=10, xi=0.05, min_cluster_size=50):
+    from sklearn.metrics import pairwise_distances
+    N = len(users)
     D = pairwise_distances(users)
 
+    # Step 3.1: Compute Core Distances (CD)
     CD = np.full(N, np.inf)
     for i in range(N):
-        sorted_dists = np.sort(D[i])
-        if len(sorted_dists) > min_pts:
-            CD[i] = sorted_dists[min_pts]  
+        sorted_distances = np.sort(D[i])
+        if len(sorted_distances) > MinPts:
+            CD[i] = sorted_distances[MinPts]
 
+    # Initialize RD and order
     RD = np.full(N, np.inf)
-    processed = np.zeros(N, dtype=bool)
     S_ORDER = []
-
     SSEED = set(range(N))
 
+    # Steps 3.2 - 3.6: Ordering points
     while SSEED:
-        # Step 3.2: pick user with smallest RD (or random if all inf)
-        i = min(SSEED, key=lambda x: RD[x]) if np.isfinite(RD).any() else np.random.choice(list(SSEED))
-
+        if np.isfinite(RD).any():
+            i = min(SSEED, key=lambda x: RD[x])
+        else:
+            i = np.random.choice(list(SSEED))
         S_ORDER.append(i)
         SSEED.remove(i)
-        processed[i] = True
 
-        # Step 3.3–3.4: update RD for neighbors
+        # Update RD for remaining points
         for k in SSEED:
-            dist = D[i][k]
-            TV = max(CD[i], dist)
-            RD[k] = min(RD[k], TV)
+            TVk = max(CD[i], D[i][k])
+            if TVk < RD[k]:
+                RD[k] = TVk
 
-    # Step 3.7: cluster detection via RD valleys
+    # Step 3.7 and 3.8: Cluster extraction
     clusters = []
     i = 0
     while i < len(S_ORDER) - 1:
@@ -56,13 +45,11 @@ def optics_deconet(users, min_pts=5, xi=0.1):
         while k < len(S_ORDER) - 1 and RD[S_ORDER[k]] <= RD[S_ORDER[k + 1]] * (1 - xi):
             k += 1
 
-        if k - j >= min_pts:
-            cluster = S_ORDER[j + 1:k + 1]
-            clusters.append(cluster)
-            i = k + 1
-        else:
-            i += 1
+        if (k - j) >= MinPts and (k - j) >= min_cluster_size:
+            clusters.append(S_ORDER[j + 1:k + 1])
 
-    reachability = [RD[i] for i in S_ORDER]
-    return clusters, reachability, S_ORDER
+        i = k + 1
+
+    return clusters, RD, S_ORDER
+
 

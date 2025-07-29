@@ -25,20 +25,17 @@ def calculate_thinning_radius(clusters, users, BS_positions, algo_type="O-DeCoNe
             thinning_radii.append(0)
             continue
 
-        # Compute r_c^i
         if algo_type == "O-DeCoNet" and reachability is not None:
             cluster_RD = [reachability[u] for u in cluster]
             r_c = np.mean(cluster_RD)
-        else:  # D-DeCoNet
+            r_c *= 10  # Empirically chosen scale factor
+        else:
             cluster_coords = users[cluster]
             center = cluster_coords.mean(axis=0)
             distances = np.linalg.norm(cluster_coords - center, axis=1)
-            r_c = np.max(distances)  # furthest point from center
+            r_c = np.max(distances)
 
-        # Compute N_B^i,awake
         N_B_awake = len(cluster) / mu_B
-
-        # Compute thinning radius r_t^i
         r_t = np.sqrt((r_c ** 2) / N_B_awake)
         thinning_radii.append(r_t)
 
@@ -63,12 +60,10 @@ def apply_mode_control(clusters, users, BS_positions, thinning_radii):
         cluster_center = cluster_coords.mean(axis=0)
         r_t = thinning_radii[idx]
 
-        # Find BSs within r_t
         distances = np.linalg.norm(BS_positions - cluster_center, axis=1)
         candidate_BSs = [i for i, d in enumerate(distances) if d <= r_t]
 
         if len(candidate_BSs) > 1:
-            # Randomly keep one awake, others sleep
             keep_awake = random.choice(candidate_BSs)
             for i in candidate_BSs:
                 if i != keep_awake:

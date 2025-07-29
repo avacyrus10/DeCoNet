@@ -2,12 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from generate_network import generate_network
 from dbscan_clustering import dbscan_deconet, merge_clusters
+from bs_mode_control import calculate_thinning_radius, apply_mode_control  # ✅ Use existing logic
 
 
-def plot_clusters(users, clusters, BS_positions=None, title="D-DeCoNet (DBSCAN-Based) Merged Clustering"):
-    """
-    Plot the merged clusters along with unclustered users and Base Station (BS) positions.
-    """
+def plot_clusters(users, clusters, BS_positions=None, thinning_radii=None, bs_states=None, title="D-DeCoNet (DBSCAN-Based) with Thinning"):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
     plt.figure(figsize=(10, 10))
 
     # Identify unclustered users
@@ -16,63 +17,91 @@ def plot_clusters(users, clusters, BS_positions=None, title="D-DeCoNet (DBSCAN-B
         for cluster in clusters:
             clustered_points.update(cluster)
 
-    unclustered = []
-    for idx in range(len(users)):
-        if idx not in clustered_points:
-            unclustered.append(idx)
+    unclustered = [idx for idx in range(len(users)) if idx not in clustered_points]
 
-    # Plot unclustered users
-    plt.scatter(users[unclustered, 0], users[unclustered, 1], c='lightgray', s=8, label='Unclustered')
+    # Plot unclustered users in light gray
+    plt.scatter(users[unclustered, 0], users[unclustered, 1],
+                c='lightgray', s=8, label='Unclustered')
 
-    # Plot each cluster with a unique color
-    colors = plt.cm.get_cmap('tab10', len(clusters))
-    for idx, cluster in enumerate(clusters):
+    # Assign colors for clusters
+    colormap = plt.cm.get_cmap('tab10', len(clusters))
+    for index, cluster in enumerate(clusters):
         cluster_points = users[cluster]
-        plt.scatter(cluster_points[:, 0], cluster_points[:, 1], s=30, color=colors(idx), label=f'Major Cluster {idx + 1}')
+        color = colormap(index)
+
+        # Plot users in cluster
+        plt.scatter(cluster_points[:, 0], cluster_points[:, 1],
+                    s=30, color=color, label=f'Major Cluster {index + 1}')
+
+        # Calculate and plot cluster center
+        center = cluster_points.mean(axis=0)  # <-- NEW
+        plt.plot(center[0], center[1], marker='*', markersize=12, color='black', label='_nolegend_')  # <-- NEW
+
+        # Draw thinning circle if given
+        if thinning_radii is not None:
+            circle = plt.Circle(center, thinning_radii[index], color=color, linestyle='--', alpha=0.2, fill=False)
+            plt.gca().add_patch(circle)
 
     # Plot Base Stations
-    if BS_positions is not None:
-        plt.scatter(BS_positions[:, 0], BS_positions[:, 1], marker='x', c='black', s=50, label='Base Stations')
+    if BS_positions is not None and isinstance(bs_states, list):
+        for i, bs in enumerate(BS_positions):
+            state = bs_states[i] if bs_states else "AWAKE"
+            color = 'green' if state == "AWAKE" else 'red'
+            label = 'AWAKE BS' if state == "AWAKE" else 'SLEEP BS'
+            plt.scatter(bs[0], bs[1], marker='x', c=color, s=60, label=label if label not in plt.gca().get_legend_handles_labels()[1] else "_nolegend_")
 
-    # Chart settings
+    # Configure plot
     plt.title(title)
     plt.xlabel('X (meters)')
     plt.ylabel('Y (meters)')
-    plt.legend()
+    plt.legend(loc='upper right', fontsize='small')
     plt.grid(True)
     plt.axis("equal")
     plt.show()
 
 
+
 def main():
     """
-    Simulate D-DeCoNet clustering using DBSCAN and visualize results.
+    Main simulation for D-DeCoNet using DBSCAN-based clustering with BS mode control.
     """
-    # Step 1: Generate the network using the existing function
+    # Generate network
     BS_positions, users_all, users_low, users_high = generate_network()
 
-    print(f"Total Users: {len(users_all)}, Low-density: {len(users_low)}, High-density: {len(users_high)}")
-    print(f"Base Stations: {len(BS_positions)}")
+    print("\n=== Network Information ===")
+    print(f"Total Users: {len(users_all)} | Base Stations: {len(BS_positions)}")
 
-    # Step 2: Apply DBSCAN clustering
-    eps = 50  # Neighborhood radius (meters)
-    min_pts = 10  # Minimum points to form a core cluster
+    # DBSCAN clustering
+    eps = 50
+    min_pts = 10
     clusters, labels = dbscan_deconet(users_all, eps=eps, min_pts=min_pts)
+
+    print("\n=== Clustering Results ===")
     print(f"Initial clusters detected by DBSCAN: {len(clusters)}")
 
-    # Step 3: Merge clusters into major groups
-    merge_radius = 150  # Distance threshold for merging clusters
-    min_cluster_size = 50  # Ignore small clusters
-    merged_clusters = merge_clusters(users_all, clusters, merge_radius=merge_radius, min_cluster_size=min_cluster_size)
+    # Merge clusters
+    merged_clusters = merge_clusters(users_all, clusters, merge_radius=150, min_cluster_size=50)
     print(f"After merging: {len(merged_clusters)} major clusters")
 
-    for idx, cl in enumerate(merged_clusters):
-        print(f"Major Cluster {idx + 1} size: {len(cl)}")
+    # Calculate thinning radii
+    thinning_radii = calculate_thinning_radius(merged_clusters, users_all, BS_positions)
 
-    # Step 4: Visualize the final result
-    plot_clusters(users_all, merged_clusters, BS_positions)
+    # Apply mode control
+    bs_states = apply_mode_control(merged_clusters, users_all, BS_positions, thinning_radii)
+
+    print("\n=== Base Station States ===")
+    print(f"AWAKE: {bs_states.count('AWAKE')} | SLEEP: {bs_states.count('SLEEP')}")
+
+    # Visualization
+    plot_clusters(
+    users=users_all,
+    clusters=merged_clusters,
+    BS_positions=BS_positions,
+    thinning_radii=thinning_radii,
+    bs_states=bs_states
+)
+
 
 
 if __name__ == "__main__":
     main()
-

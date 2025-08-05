@@ -2,7 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from generate_network import generate_network
 from optics_clustering import optics_deconet, merge_clusters
-from bs_mode_control import calculate_thinning_radius, compute_energy_per_info_bit
+from bs_mode_control import (
+    calculate_thinning_radius,
+    compute_sinr,
+    compute_energy_per_info_bit,
+    apply_mode_control_multi
+)
+
 
 def plot_clusters(users, clusters, BS_positions=None, bs_states=None, title="O-DeCoNet (OPTICS-Based) Clustering"):
     plt.figure(figsize=(10, 10))
@@ -36,6 +42,7 @@ def plot_clusters(users, clusters, BS_positions=None, bs_states=None, title="O-D
     plt.axis("equal")
     plt.show()
 
+
 def plot_reachability(reachability):
     plt.figure(figsize=(10, 4))
     plt.plot(reachability, color='darkblue')
@@ -46,29 +53,6 @@ def plot_reachability(reachability):
     plt.tight_layout()
     plt.show()
 
-def apply_odeconet_mode_control(clusters, users_all, BS_positions, users_per_bs=3000):
-    """
-    Activate ⌈cluster_size / users_per_bs⌉ base stations per cluster.
-    """
-    awake_indices = set()
-
-    for cluster in clusters:
-        if len(cluster) == 0:
-            continue
-        cluster_coords = users_all[cluster]
-        centroid = cluster_coords.mean(axis=0)
-
-        # Determine how many BS to activate in this cluster
-        n_bs = max(1, int(np.ceil(len(cluster) / users_per_bs)))
-
-        # Activate n_bs closest to centroid
-        distances = np.linalg.norm(BS_positions - centroid, axis=1)
-        closest_indices = np.argsort(distances)[:n_bs]
-
-        awake_indices.update(closest_indices)
-
-    return ["AWAKE" if i in awake_indices else "SLEEP" for i in range(len(BS_positions))]
-
 
 def main(K=None, visualize=True):
     BS_positions, users_all, _, _ = generate_network(K=K)
@@ -76,24 +60,37 @@ def main(K=None, visualize=True):
     print("\n=== Network Information ===")
     print(f"Total Users: {len(users_all)} | Base Stations: {len(BS_positions)}")
 
+    # OPTICS clustering
     min_pts = 10
     xi = 0.05
-    clusters, reachability, order = optics_deconet(users_all, min_pts=min_pts, xi=xi, distance_threshold=50)
+    clusters, reachability, order = optics_deconet(
+        users_all, min_pts=min_pts, xi=xi, distance_threshold=50
+    )
 
     print("\n=== Clustering Results ===")
     print(f"Initial clusters detected: {len(clusters)}")
-
     merged_clusters = merge_clusters(users_all, clusters, merge_radius=150, min_cluster_size=50)
     print(f"After merging: {len(merged_clusters)} major clusters")
 
-    # Fix: activate one BS per cluster centroid
-    bs_states = apply_odeconet_mode_control(merged_clusters, users_all, BS_positions)
+    # Thinning radius calculation
+    thinning_radii = calculate_thinning_radius(
+        merged_clusters, users_all, BS_positions, algo_type="O-DeCoNet", reachability=reachability
+    )
+
+    # Use the corrected mode control function.
+    bs_states = apply_mode_control_multi(
+        merged_clusters, users_all, BS_positions, thinning_radii
+    )
+
+    # SINR + ηᵢ
+    sinr_dict = compute_sinr(users_all, bs_states, BS_positions)
+    eta_i_bit = compute_energy_per_info_bit(sinr_dict)  # J/bit
+    eta_i_Mbit = eta_i_bit * 1e6
 
     awake = bs_states.count("AWAKE")
     sleep = bs_states.count("SLEEP")
-    eta_i = compute_energy_per_info_bit(awake, len(users_all))
 
-    print(f"\nBase Station States: {awake} AWAKE, {sleep} SLEEP | ηᵢ: {eta_i:.4f} J/Mbit")
+    print(f"\nBase Station States: {awake} AWAKE, {sleep} SLEEP | ηᵢ: {eta_i_Mbit:.4f} J/Mbit")
 
     if visualize:
         plot_clusters(users_all, merged_clusters, BS_positions, bs_states)
@@ -105,14 +102,18 @@ def main(K=None, visualize=True):
         "awake_BS": awake,
         "sleep_BS": sleep,
         "total_BS": len(BS_positions),
-        "eta_i": eta_i
+        "eta_i": eta_i_Mbit
     }
+
 
 if __name__ == "__main__":
     results = []
-    for K in range(2000, 6200, 2000):  
-        print(f"\n\n=== Running O-DeCoNet with K = {K} ===")
-        res = main(K=K, visualize=False)
+    # K range should be adjusted to match the paper's graph.
+    # The paper shows K from 2 to 30, which corresponds to user densities.
+    # Your K is in thousands. Let's assume K in your code is the total users.
+    for K_val in range(2000, 32000, 2000):
+        print(f"\n\n=== Running O-DeCoNet with K = {K_val} ===")
+        res = main(K=K_val, visualize=False)
         results.append(res)
 
     Ks = [r["K"] for r in results]

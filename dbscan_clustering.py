@@ -40,7 +40,7 @@ def merge_clusters(users, clusters, merge_radius=150, min_cluster_size=50):
     Returns:
         merged_clusters (list of list): Merged list of major clusters
     """
-    # Keep only large clusters
+
     large_clusters = [c for c in clusters if len(c) >= min_cluster_size]
     centroids = [users[c].mean(axis=0) for c in large_clusters]
 

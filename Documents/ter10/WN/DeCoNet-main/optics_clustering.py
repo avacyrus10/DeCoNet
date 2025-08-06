@@ -1,55 +1,55 @@
 import numpy as np
-from sklearn.metrics import pairwise_distances
+from sklearn.cluster import OPTICS
 
-def odeconet_optics(users, MinPts=10, xi=0.05, min_cluster_size=50):
-    from sklearn.metrics import pairwise_distances
-    N = len(users)
-    D = pairwise_distances(users)
-
-    # Step 3.1: Compute Core Distances (CD)
-    CD = np.full(N, np.inf)
-    for i in range(N):
-        sorted_distances = np.sort(D[i])
-        if len(sorted_distances) > MinPts:
-            CD[i] = sorted_distances[MinPts]
-
-    # Initialize RD and order
-    RD = np.full(N, np.inf)
-    S_ORDER = []
-    SSEED = set(range(N))
-
-    # Steps 3.2 - 3.6: Ordering points
-    while SSEED:
-        if np.isfinite(RD).any():
-            i = min(SSEED, key=lambda x: RD[x])
-        else:
-            i = np.random.choice(list(SSEED))
-        S_ORDER.append(i)
-        SSEED.remove(i)
-
-        # Update RD for remaining points
-        for k in SSEED:
-            TVk = max(CD[i], D[i][k])
-            if TVk < RD[k]:
-                RD[k] = TVk
-
-    # Step 3.7 and 3.8: Cluster extraction
+def optics_deconet(users, min_pts=10, xi=0.05):
+    """
+    Implements O-DeCoNet OPTICS-based clustering using scikit-learn.
+    """
+    optics = OPTICS(min_samples=min_pts, xi=xi, min_cluster_size=min_pts).fit(users)
+    
+    labels = optics.labels_
+    
     clusters = []
-    i = 0
-    while i < len(S_ORDER) - 1:
-        j = i
-        while j < len(S_ORDER) - 1 and RD[S_ORDER[j]] * (1 - xi) >= RD[S_ORDER[j + 1]]:
-            j += 1
+    unique_labels = set(labels)
+    for cluster_id in unique_labels:
+        if cluster_id == -1:
+            continue
+        cluster_indices = np.where(labels == cluster_id)[0].tolist()
+        clusters.append(cluster_indices)
+        
+    reachability = optics.reachability_
+    
+    return clusters, reachability, optics.ordering_
 
-        k = j
-        while k < len(S_ORDER) - 1 and RD[S_ORDER[k]] <= RD[S_ORDER[k + 1]] * (1 - xi):
-            k += 1
+def merge_clusters(users, clusters, merge_radius=150, min_cluster_size=1):
+    """
+    Merge clusters that are close together into major clusters.
+    """
+    large_clusters = []
+    for cluster in clusters:
+        if len(cluster) >= min_cluster_size:
+            large_clusters.append(cluster)
 
-        if (k - j) >= MinPts and (k - j) >= min_cluster_size:
-            clusters.append(S_ORDER[j + 1:k + 1])
+    centroids = []
+    if not large_clusters:
+        return []
+    for cluster in large_clusters:
+        centroid = users[cluster].mean(axis=0)
+        centroids.append(centroid)
 
-        i = k + 1
+    merged_clusters = []
+    used = set()
 
-    return clusters, RD, S_ORDER
+    for i, cluster_i in enumerate(large_clusters):
+        if i in used:
+            continue
 
+        merged_set = set(cluster_i)
+        for j in range(i + 1, len(large_clusters)):
+            if np.linalg.norm(centroids[i] - centroids[j]) < merge_radius:
+                merged_set.update(large_clusters[j])
+                used.add(j)
 
+        merged_clusters.append(list(merged_set))
+
+    return merged_clusters

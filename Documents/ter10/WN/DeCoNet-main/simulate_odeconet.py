@@ -1,168 +1,125 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import pairwise_distances
+import random
 
-# =========================
-# OPTICS-based Clustering
-# =========================
-def optics_deconet(users, min_pts=5, xi=0.1, distance_threshold=None):
+from generate_network import generate_network
+from optics_clustering import optics_deconet, merge_clusters
+
+from bs_mode_control import calculate_thinning_radius, apply_mode_control
+
+
+def plot_clusters(users, clusters, BS_positions=None, bs_states=None, title="O-DeCoNet (OPTICS-Based) Clustering"):
     """
-    Implements O-DeCoNet OPTICS-based clustering.
-    
-    Args:
-        users: ndarray (N,2) user coordinates
-        min_pts: minimum number of points to define a core
-        xi: steepness parameter for RD valley detection
-        distance_threshold: optional fallback threshold for clustering
-
-    Returns:
-        clusters: list of clusters (list of indices)
-        reachability: RD list for users in order
-        S_ORDER: ordering of users
+    Plot merged clusters, unclustered users, cluster centers, and base stations.
     """
-    N = users.shape[0]
-    D = pairwise_distances(users)
-
-    # Core Distances (CD)
-    CD = np.full(N, np.inf)
-    for i in range(N):
-        sorted_dists = np.sort(D[i])
-        if len(sorted_dists) > min_pts:
-            CD[i] = sorted_dists[min_pts]
-
-    # Initialize Reachability (RD)
-    RD = np.full(N, np.inf)
-    S_ORDER = []
-    SSEED = set(range(N))
-
-    while SSEED:
-        # Pick point with smallest RD (or random if all inf)
-        i = min(SSEED, key=lambda x: RD[x]) if np.isfinite(RD).any() else np.random.choice(list(SSEED))
-        S_ORDER.append(i)
-        SSEED.remove(i)
-
-        # Update RD for remaining points
-        for k in SSEED:
-            dist = D[i][k]
-            TV = max(CD[i], dist)
-            if TV < RD[k]:
-                RD[k] = TV
-
-    # =========================
-    # Cluster extraction using RD valleys
-    # =========================
-    clusters = []
-    i = 0
-    while i < len(S_ORDER) - 1:
-        j = i
-        while j < len(S_ORDER) - 1 and RD[S_ORDER[j]] * (1 - xi) >= RD[S_ORDER[j + 1]]:
-            j += 1
-        k = j
-        while k < len(S_ORDER) - 1 and RD[S_ORDER[k]] <= RD[S_ORDER[k + 1]] * (1 - xi):
-            k += 1
-
-        if k - j >= min_pts:
-            cluster = S_ORDER[j + 1:k + 1]
-            clusters.append(cluster)
-            i = k + 1
-        else:
-            i += 1
-
-    # =========================
-    # Fallback: if no clusters found
-    # =========================
-    if len(clusters) == 0 and distance_threshold is not None:
-        visited = np.zeros(N, dtype=bool)
-        for idx in range(N):
-            if visited[idx]:
-                continue
-            neighbors = np.where(D[idx] <= distance_threshold)[0]
-            if len(neighbors) >= min_pts:
-                clusters.append(list(neighbors))
-                visited[neighbors] = True
-
-    reachability = [RD[i] for i in S_ORDER]
-    return clusters, reachability, S_ORDER
-
-
-# =========================
-# Visualization Functions
-# =========================
-def plot_clusters(users, clusters, BS_positions=None, title="O-DeCoNet Clustering", min_cluster_size=50, merge_radius=150):
-    from sklearn.metrics import pairwise_distances
     plt.figure(figsize=(10, 10))
 
-    # Filter and merge clusters
-    large_clusters = [c for c in clusters if len(c) >= min_cluster_size]
-    centroids = [users[c].mean(axis=0) for c in large_clusters]
-
-    merged_clusters = []
-    used = set()
-    for i, c in enumerate(large_clusters):
-        if i in used:
-            continue
-        merged = set(c)
-        for j in range(i+1, len(large_clusters)):
-            if np.linalg.norm(centroids[i] - centroids[j]) < merge_radius:
-                merged.update(large_clusters[j])
-                used.add(j)
-        merged_clusters.append(list(merged))
-
-    # Plot unclustered points
-    clustered_points = set(np.concatenate(merged_clusters)) if merged_clusters else set()
+    # Identify unclustered users
+    clustered_points = set()
+    if clusters:
+        for cluster in clusters:
+            clustered_points.update(cluster)
     unclustered = [idx for idx in range(len(users)) if idx not in clustered_points]
-    plt.scatter(users[unclustered, 0], users[unclustered, 1], c='lightgray', s=8, label='Unclustered')
 
-    # Plot merged clusters
-    colors = plt.cm.get_cmap('tab10', len(merged_clusters))
-    for idx, cluster in enumerate(merged_clusters):
-        coords = users[cluster]
-        plt.scatter(coords[:, 0], coords[:, 1], s=30, color=colors(idx), label=f'Major Cluster {idx+1}')
+    # Plot unclustered users
+    plt.scatter(users[unclustered, 0], users[unclustered, 1],
+                c='lightgray', s=8, label='Unclustered')
 
-    # Plot base stations
-    if BS_positions is not None:
-        plt.scatter(BS_positions[:, 0], BS_positions[:, 1], marker='x', c='black', s=50, label='Base Stations')
+    # Assign colors for clusters
+    colormap = plt.cm.get_cmap('tab10', len(clusters))
+    for index, cluster in enumerate(clusters):
+        cluster_points = users[cluster]
+        color = colormap(index)
+        plt.scatter(cluster_points[:, 0], cluster_points[:, 1],
+                    s=30, color=color, label=f'Major Cluster {index + 1}')
+
+        # Plot cluster center as star
+        cluster_coords = users[cluster]
+        center = cluster_coords.mean(axis=0)
+        plt.scatter(center[0], center[1], marker='*', c='black', s=200)
+
+    # Plot base stations with AWAKE/SLEEP state
+    if BS_positions is not None and bs_states is not None:
+        BS_positions = np.array(BS_positions)
+        awake_mask = np.array(bs_states) == "AWAKE"
+        sleep_mask = ~awake_mask
+
+        plt.scatter(BS_positions[awake_mask, 0], BS_positions[awake_mask, 1],
+                    marker='x', c='green', s=60, label='AWAKE BS')
+        plt.scatter(BS_positions[sleep_mask, 0], BS_positions[sleep_mask, 1],
+                    marker='x', c='red', s=60, label='SLEEP BS')
 
     plt.title(title)
     plt.xlabel('X (meters)')
     plt.ylabel('Y (meters)')
-    plt.legend()
+    plt.legend(loc='upper right', fontsize='small')
     plt.grid(True)
     plt.axis("equal")
     plt.show()
 
 
-
 def plot_reachability(reachability):
+    """
+    Plot the reachability distances for OPTICS ordering.
+    """
     plt.figure(figsize=(10, 4))
     plt.plot(reachability, color='darkblue')
     plt.title("Reachability Distance (RD) Plot - O-DeCoNet")
-    plt.xlabel("Order of users (S_ORDER)")
+    plt.xlabel("Order of Users (S_ORDER)")
     plt.ylabel("Reachability Distance")
     plt.grid(True)
     plt.tight_layout()
     plt.show()
 
 
-# =========================
-# Main Testing
-# =========================
-if __name__ == "__main__":
-
-    from generate_network import generate_network
-
+def main():
+    """
+    Main simulation for O-DeCoNet using OPTICS-based clustering.
+    """
+    # Generate network
     BS_positions, users_all, _, _ = generate_network()
 
+    print("\n=== Network Information ===")
+    print(f"Total Users: {len(users_all)}")
+    print(f"Base Stations: {len(BS_positions)}")
+
+    # Run OPTICS-based clustering
     min_pts = 10
     xi = 0.05
-    min_cluster_size = 50
     clusters, reachability, order = optics_deconet(users_all, min_pts=min_pts, xi=xi, distance_threshold=50)
 
-    print(f"Total clusters found: {len(clusters)}")
-    if clusters:
-        for idx, cl in enumerate(clusters[:3]):
-            print(f"Cluster {idx+1} size: {len(cl)}")
+    print("\n=== Clustering Results ===")
+    print(f"Initial clusters detected: {len(clusters)}")
 
-    plot_clusters(users_all, clusters, BS_positions, title="O-DeCoNet (OPTICS-Based) Clustering of Users")
+    # Merge clusters to form major groups
+    merge_radius = 150
+    min_cluster_size = 50
+    merged_clusters = merge_clusters(users_all, clusters,
+                                 merge_radius=merge_radius,
+                                 min_cluster_size=1)
+    if not merged_clusters:
+        merged_clusters = [list(range(len(users_all)))]
+
+
+    print(f"After merging: {len(merged_clusters)} major clusters")
+    for index, cluster in enumerate(merged_clusters):
+        print(f"Major Cluster {index + 1} size: {len(cluster)}")
+
+    # Calculate thinning radius and apply mode control
+    thinning_radii = calculate_thinning_radius(merged_clusters, users_all, BS_positions,
+                                               algo_type="O-DeCoNet", reachability=reachability)
+
+    bs_states = apply_mode_control(merged_clusters, users_all, BS_positions, thinning_radii)
+
+    asleep_count = bs_states.count("SLEEP")
+    awake_count = bs_states.count("AWAKE")
+    print(f"\nBase Station States: {awake_count} awake, {asleep_count} asleep")
+
+    # Visualization
+    plot_clusters(users_all, merged_clusters, BS_positions, bs_states)
     plot_reachability(reachability)
+
+
+if __name__ == "__main__":
+    main()
 

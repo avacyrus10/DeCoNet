@@ -1,80 +1,121 @@
 import numpy as np
 from sklearn.cluster import DBSCAN
+from scipy.spatial import ConvexHull, distance_matrix
 
-def dbscan_deconet(users, eps=50, min_pts=10):
+
+def max_pairwise_distance(points: np.ndarray) -> float:
     """
-    Implements D-DeCoNet clustering using DBSCAN.
-
-    Args:
-        users (ndarray): shape (N, 2) array of user coordinates
-        eps (float): ε - maximum neighborhood distance
-        min_pts (int): MinPts - minimum number of users to form a core
-
-    Returns:
-        clusters (list of list): List of clusters (each is list of indices)
-        labels (ndarray): label for each user (-1 means noise)
+    Compute the maximum pairwise distance in a set of points
     """
-    # Run DBSCAN
-    db = DBSCAN(eps=eps, min_samples=min_pts).fit(users)
+    n = len(points)
+
+    if n <= 1:
+        return 0.0
+
+    if n == 2:
+        diff = points[0] - points[1]
+        single_distance = np.linalg.norm(diff)
+        return float(single_distance)
+
+    # Use the convex hull to reduce the number of pair checks
+    hull = ConvexHull(points)
+    hull_points = points[hull.vertices]
+
+    dmat = distance_matrix(hull_points, hull_points)
+    max_distance = np.max(dmat)
+
+    return float(max_distance)
+
+
+def dbscan_deconet(users, eps=50, min_pts=10, merge_radius=150, min_cluster_size=50):
+    """
+    Full D-DeCoNet: DBSCAN clustering, merge, and compute r_c for each cluster.
+    r_c = max distance between any two users in the cluster / 2
+    """
+    db = DBSCAN(
+        eps=eps,
+        min_samples=min_pts,
+        metric='euclidean',
+        algorithm='ball_tree'
+    )
+    db.fit(users)
+
     labels = db.labels_
 
-    # Group points into clusters based on labels
+    # Initial clusters (skip noise label == -1)
     clusters = []
     unique_labels = set(labels)
-
-    for cluster_id in unique_labels:
-        # Skip noise points
-        if cluster_id == -1:
+    for cid in unique_labels:
+        if cid == -1:
             continue
-        
-        # Collect all points belonging to this cluster
-        cluster_indices = np.where(labels == cluster_id)[0].tolist()
-        clusters.append(cluster_indices)
+        members = np.where(labels == cid)[0].tolist()
+        clusters.append(members)
 
-    return clusters, labels
+    # Merge close clusters
+    merged_clusters = merge_clusters(
+        users=users,
+        clusters=clusters,
+        merge_radius=merge_radius,
+        min_cluster_size=min_cluster_size
+    )
+
+    # Compute r_c for each merged cluster
+    rc_list = []
+    for cluster in merged_clusters:
+        # If the merged cluster is too small to define a radius, use 0.0
+        if len(cluster) < 2:
+            rc_list.append(0.0)
+            continue
+
+        max_dist = max_pairwise_distance(users[cluster])
+        rc = max_dist / 2.0
+        rc_list.append(float(rc))
+
+    return merged_clusters, rc_list
 
 
 def merge_clusters(users, clusters, merge_radius=150, min_cluster_size=50):
     """
-    Merge clusters that are close to each other into major clusters.
-
-    Args:
-        users (ndarray): All user positions
-        clusters (list): List of initial clusters
-        merge_radius (float): Maximum distance between cluster centroids to merge
-        min_cluster_size (int): Ignore clusters smaller than this size
-
-    Returns:
-        merged_clusters (list of list): List of merged major clusters
+    Merge clusters that are close together based on centroid distance.
     """
-    # Filter out small clusters
+    # Keep only clusters meeting the minimum size
     large_clusters = []
-    for cluster in clusters:
-        if len(cluster) >= min_cluster_size:
-            large_clusters.append(cluster)
+    for c in clusters:
+        if len(c) >= min_cluster_size:
+            large_clusters.append(c)
 
-    # Calculate centroids for the large clusters
+    # If nothing qualifies, return empty list
+    if len(large_clusters) == 0:
+        return []
+
+    # Compute centroids for each large cluster
     centroids = []
-    for cluster in large_clusters:
-        centroid = users[cluster].mean(axis=0)
+    for c in large_clusters:
+        centroid = users[c].mean(axis=0)
         centroids.append(centroid)
 
-    # Merge clusters that are close to each other
     merged_clusters = []
     used = set()
 
-    for i, cluster in enumerate(large_clusters):
+    for i, cluster_i in enumerate(large_clusters):
         if i in used:
             continue
-        
-        merged = set(cluster)
+
+        current_merged = set(cluster_i)
+
         for j in range(i + 1, len(large_clusters)):
-            distance = np.linalg.norm(centroids[i] - centroids[j])
-            if distance < merge_radius:
-                merged.update(large_clusters[j])
+            if j in used:
+                continue
+
+            # Distance between centroids
+            diff = centroids[i] - centroids[j]
+            centroid_distance = np.linalg.norm(diff)
+
+            if centroid_distance < float(merge_radius):
+                current_merged.update(large_clusters[j])
                 used.add(j)
 
-        merged_clusters.append(list(merged))
+        merged_clusters.append(list(current_merged))
 
     return merged_clusters
 

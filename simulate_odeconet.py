@@ -1,121 +1,68 @@
 import numpy as np
-import matplotlib.pyplot as plt
-import random
-
 from generate_network import generate_network
-from optics_clustering import optics_deconet, merge_clusters
+from optics_clustering import optics_deconet
+from bs_mode_control import calculate_thinning_radius, apply_mode_control, compute_power_per_area, compute_energy_per_info_bit
 
-from bs_mode_control import calculate_thinning_radius, apply_mode_control
 
+def main(lambda_u_high_fixed=None,
+         power_params=None,
+         rng_seed=None,
+         visualize=False):
 
-def plot_clusters(users, clusters, BS_positions=None, bs_states=None, title="O-DeCoNet (OPTICS-Based) Clustering"):
     """
-    Plot merged clusters, unclustered users, cluster centers, and base stations.
+    Simulate O-DeCoNet (OPTICS-based) and compute η_A.
+
+    Args:
+        lambda_u_high_fixed: fixed λ_H^u for high-density areas (per km^2) or None for random.
+        power_params: dict with P_tx_W, sigma, P_c_W, P_o_W (defaults if None).
+        rng_seed: int for reproducibility.
+        visualize: whether to plot clusters.
+
+    Returns:
+        dict: {"eta_A": float, "awake": int, "sleep": int}
     """
-    plt.figure(figsize=(10, 10))
+    if power_params is None:
+        power_params = dict(P_tx_W=0.25, sigma=0.23, P_c_W=5.4, P_o_W=0.7)
 
-    # Identify unclustered users
-    clustered_points = set()
-    if clusters:
-        for cluster in clusters:
-            clustered_points.update(cluster)
-    unclustered = [idx for idx in range(len(users)) if idx not in clustered_points]
+    # --- Generate network ---
+    BS_positions, users_all, users_low, users_high_list = generate_network(
+        lambda_u_high_fixed=lambda_u_high_fixed,
+        rng_seed=rng_seed
+    )
 
-    # Plot unclustered users
-    plt.scatter(users[unclustered, 0], users[unclustered, 1],
-                c='lightgray', s=8, label='Unclustered')
+    # --- Cluster users with OPTICS ---
+    merged_clusters, rc_list = optics_deconet(users_all, min_pts=10, xi=0.10, min_cluster_size=60)
 
-    # Assign colors for clusters
-    colormap = plt.cm.get_cmap('tab10', len(clusters))
-    for index, cluster in enumerate(clusters):
-        cluster_points = users[cluster]
-        color = colormap(index)
-        plt.scatter(cluster_points[:, 0], cluster_points[:, 1],
-                    s=30, color=color, label=f'Major Cluster {index + 1}')
+    # --- Compute thinning radii ---
+    thinning_radii = []
+    for cluster_users, rc in zip(merged_clusters, rc_list):
+        thinning_radii.append(
+            calculate_thinning_radius(cluster_users, users_all, rc)
+        )
 
-        # Plot cluster center as star
-        cluster_coords = users[cluster]
-        center = cluster_coords.mean(axis=0)
-        plt.scatter(center[0], center[1], marker='*', c='black', s=200)
-
-    # Plot base stations with AWAKE/SLEEP state
-    if BS_positions is not None and bs_states is not None:
-        BS_positions = np.array(BS_positions)
-        awake_mask = np.array(bs_states) == "AWAKE"
-        sleep_mask = ~awake_mask
-
-        plt.scatter(BS_positions[awake_mask, 0], BS_positions[awake_mask, 1],
-                    marker='x', c='green', s=60, label='AWAKE BS')
-        plt.scatter(BS_positions[sleep_mask, 0], BS_positions[sleep_mask, 1],
-                    marker='x', c='red', s=60, label='SLEEP BS')
-
-    plt.title(title)
-    plt.xlabel('X (meters)')
-    plt.ylabel('Y (meters)')
-    plt.legend(loc='upper right', fontsize='small')
-    plt.grid(True)
-    plt.axis("equal")
-    plt.show()
-
-
-def plot_reachability(reachability):
-    """
-    Plot the reachability distances for OPTICS ordering.
-    """
-    plt.figure(figsize=(10, 4))
-    plt.plot(reachability, color='darkblue')
-    plt.title("Reachability Distance (RD) Plot - O-DeCoNet")
-    plt.xlabel("Order of Users (S_ORDER)")
-    plt.ylabel("Reachability Distance")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-
-def main():
-    """
-    Main simulation for O-DeCoNet using OPTICS-based clustering.
-    """
-    # Generate network
-    BS_positions, users_all, _, _ = generate_network()
-
-    print("\n=== Network Information ===")
-    print(f"Total Users: {len(users_all)}")
-    print(f"Base Stations: {len(BS_positions)}")
-
-    # Run OPTICS-based clustering
-    min_pts = 10
-    xi = 0.05
-    clusters, reachability, order = optics_deconet(users_all, min_pts=min_pts, xi=xi, distance_threshold=50)
-
-    print("\n=== Clustering Results ===")
-    print(f"Initial clusters detected: {len(clusters)}")
-
-    # Merge clusters to form major groups
-    merge_radius = 150
-    min_cluster_size = 50
-    merged_clusters = merge_clusters(users_all, clusters,
-                                     merge_radius=merge_radius,
-                                     min_cluster_size=min_cluster_size)
-
-    print(f"After merging: {len(merged_clusters)} major clusters")
-    for index, cluster in enumerate(merged_clusters):
-        print(f"Major Cluster {index + 1} size: {len(cluster)}")
-
-    # Calculate thinning radius and apply mode control
-    thinning_radii = calculate_thinning_radius(merged_clusters, users_all, BS_positions,
-                                               algo_type="O-DeCoNet", reachability=reachability)
-
+    # --- Apply BS mode control ---
     bs_states = apply_mode_control(merged_clusters, users_all, BS_positions, thinning_radii)
 
-    asleep_count = bs_states.count("SLEEP")
-    awake_count = bs_states.count("AWAKE")
-    print(f"\nBase Station States: {awake_count} awake, {asleep_count} asleep")
+    # --- Compute η_A ---
+    eta_A = compute_power_per_area(bs_states, power_params, area_size_m=1000)
+    eta_I = compute_energy_per_info_bit(bs_states, BS_positions, users_all, power_params)
 
-    # Visualization
-    plot_clusters(users_all, merged_clusters, BS_positions, bs_states)
-    plot_reachability(reachability)
+    print(f"[O-DeCoNet] η_A = {eta_A:.3f} W/km^2 | η_I = {eta_I:.3e} W/bps | "
+          f"AWAKE={bs_states.count('AWAKE')} SLEEP={bs_states.count('SLEEP')}")
 
+    # --- Optional visualization ---
+    if visualize == "clusters":
+        from viz import plot_clusters
+        plot_clusters(users_all, merged_clusters, BS_positions, thinning_radii, bs_states,
+                      title="O-DeCoNet (OPTICS) — Clusters & Thinning")
+
+
+    return {
+        "eta_A": eta_A,
+        "eta_I": eta_I,
+        "awake": bs_states.count("AWAKE"),
+        "sleep": bs_states.count("SLEEP"),
+    }
 
 if __name__ == "__main__":
     main()

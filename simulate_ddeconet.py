@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from generate_network import generate_network
 from dbscan_clustering import dbscan_deconet, merge_clusters
-from bs_mode_control import calculate_thinning_radius, apply_mode_control  # ✅ Use existing logic
+from bs_mode_control import calculate_thinning_radius, apply_mode_control  
 
 
 def plot_clusters(users, clusters, BS_positions=None, thinning_radii=None, bs_states=None, title="D-DeCoNet (DBSCAN-Based) with Thinning"):
